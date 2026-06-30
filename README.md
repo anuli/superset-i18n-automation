@@ -25,9 +25,9 @@ GitHub Issue Event
                                   |
                                   v
                           +------------------+
-                          |  /report         |
-                          |  /report/text    |
-                          |  CLI dashboard   |
+                          |  report-github   |
+                          |  -> GitHub issue  |
+                          |  comment         |
                           +------------------+
 ```
 
@@ -66,6 +66,9 @@ python -m src.cli verify
 
 # View the observability report
 python -m src.cli report
+
+# Post report as a GitHub issue comment
+python -m src.cli report-github
 ```
 
 ## Configuration
@@ -104,19 +107,45 @@ A Devin automation can be configured to trigger on GitHub issue events directly,
 
 The system answers: *"If I were an engineering leader, how would I know this is working?"*
 
-### Metrics available via `/report` (JSON) and `/report/text` (plain text):
-- **Issues tracked** — total cosmetic issues processed
-- **Sessions created** — total Devin sessions launched
-- **Sessions with PRs** — how many sessions produced a pull request
-- **PR success rate** — percentage of sessions that resulted in a PR
-- **Session status breakdown** — created / running / finished / error
-- **Recent events** — audit log of issue receipts, session creations, status changes
+After each automation run, a **markdown summary** is posted as a comment on a pinned GitHub issue (`automation-status` label) in `anuli/superset`. No server or dashboard needed — just check the issue thread.
 
-### Session sync
-`POST /sessions/sync` or `python -m src.cli sync` polls the Devin API to update session statuses and detect newly created PRs.
+### Report contents
+
+| Metric | Description |
+|--------|-------------|
+| Issues tracked | Total cosmetic issues processed |
+| Sessions created | Devin sessions launched |
+| PRs produced | Sessions that resulted in a PR |
+| Success rate | % of sessions → PR |
+| Avg time to PR | Mean session duration for finished PRs |
+| Verification status | Verified / pending / errors |
+| Throughput | PRs in last 24h and 7d |
+| Session table | Per-issue status, PR link, verification status |
+| Event log | Recent audit events (collapsible) |
+
+### How to use
+
+```bash
+# Print the markdown report to stdout
+python -m src.cli report
+
+# Post the report as a GitHub issue comment (requires GITHUB_TOKEN)
+python -m src.cli report-github
+```
+
+The scheduled automation runs `report-github` after each batch, so reports accumulate automatically on the status issue.
+
+### Other endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /report` | JSON report with all metrics |
+| `GET /report/text` | Markdown report as plain text |
+| `POST /sessions/sync` | Poll Devin API to update session statuses |
+| `POST /sessions/verify` | Create Playwright verification session |
 
 ### Playwright verification
-`POST /sessions/verify` or `python -m src.cli verify` creates a single Devin session that uses Playwright to render affected components in isolation and capture before/after screenshots — no Docker or full Superset startup required (~2-3 min vs 20+). Falls back to code review + test comparison if a component can't be rendered standalone. PR descriptions are updated from "Pending" to "Screenshots attached" (or a fallback note).
+`python -m src.cli verify` creates a single Devin session that uses Playwright to render affected components in isolation and capture before/after screenshots — no Docker required (~2-3 min vs 20+).
 
 ## Tests
 

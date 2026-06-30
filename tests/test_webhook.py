@@ -172,4 +172,7 @@ def test_report_empty(client) -> None:
 def test_report_text_empty(client) -> None:
     resp = client.get("/report/text")
     assert resp.status_code == 200
-    assert "COSMETIC-BUG AUTOMATION REPORT" in resp.data.decode()
+    body = resp.data.decode()
+    assert "Automation Report" in body
+    assert "Issues tracked" in body
+    assert "Success rate" in body

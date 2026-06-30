@@ -6,6 +6,7 @@ Usage:
     python -m src.cli backfill
     python -m src.cli sync
     python -m src.cli report
+    python -m src.cli report-github
     python -m src.cli process-issue ISSUE_NUMBER
 """
 
@@ -134,53 +135,119 @@ def cmd_verify(args: argparse.Namespace) -> None:
         print(f"  Session: {result['session_url']}")
 
 
-def cmd_report(args: argparse.Namespace) -> None:
-    """Print the observability report."""
-    init_db()
+def _fmt_dur(seconds: float | None) -> str:
+    """Format seconds into a human-readable duration."""
+    if seconds is None:
+        return "N/A"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.1f}m"
+    return f"{minutes / 60:.1f}h"
 
-    stats = get_session_stats()
-    sessions = get_all_sessions()
-    events = get_recent_events(limit=20)
 
-    print("=" * 64)
-    print("  SUPERSET COSMETIC-BUG AUTOMATION REPORT")
-    print("=" * 64)
-    print(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print()
+def build_markdown_report(
+    stats: dict, sessions: list[dict], events: list[dict],
+) -> str:
+    """Build a markdown report string suitable for GitHub issue comments."""
+    total = stats["total_sessions"]
+    prs = stats["sessions_with_prs"]
+    rate = (prs / total * 100) if total > 0 else 0
+    v = stats.get("verification", {})
+    tp = stats.get("throughput", {})
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    print("--- Summary ---")
-    print(f"  Issues tracked:        {stats['total_issues_tracked']}")
-    print(f"  Devin sessions total:  {stats['total_sessions']}")
-    print(f"  Sessions with PRs:     {stats['sessions_with_prs']}")
+    lines = [
+        f"## Automation Report — {now_str}",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Issues tracked | {stats['total_issues_tracked']} |",
+        f"| Sessions created | {total} |",
+        f"| PRs produced | {prs} |",
+        f"| Success rate | {rate:.0f}% |",
+        f"| Avg time to PR | {_fmt_dur(stats.get('avg_time_to_pr_seconds'))} |",
+        f"| PRs verified | {v.get('verified', 0)} |",
+        f"| Verification pending | {v.get('pending', 0)} |",
+        f"| Verification errors | {v.get('errors', 0)} |",
+        f"| PRs (last 24h) | {tp.get('prs_last_24h', 0)} |",
+        f"| PRs (last 7d) | {tp.get('prs_last_7d', 0)} |",
+        "",
+        "### Status Breakdown",
+        "",
+        "| Status | Count |",
+        "|--------|-------|",
+    ]
     for status, count in stats.get("by_status", {}).items():
-        print(f"    {status}: {count}")
-    if stats["total_sessions"] > 0:
-        rate = stats["sessions_with_prs"] / stats["total_sessions"] * 100
-        print(f"  PR success rate:       {rate:.0f}%")
-    print()
+        lines.append(f"| {status} | {count} |")
 
     if sessions:
-        print("--- Sessions ---")
+        lines += [
+            "",
+            "### Sessions",
+            "",
+            "| Issue | Title | Status | PR | Verified |",
+            "|-------|-------|--------|-----|----------|",
+        ]
         for s in sessions[:20]:
-            pr_str = f" -> {s['pr_url']}" if s.get("pr_url") else ""
-            print(
-                f"  [{s['status']:>10s}] #{s['github_issue_number']} "
-                f"{s['issue_title'][:50]}{pr_str}"
+            pr_link = f"[PR]({s['pr_url']})" if s.get("pr_url") else "-"
+            v_status = s.get("screenshot_status") or "pending"
+            lines.append(
+                f"| #{s['github_issue_number']} "
+                f"| {s['issue_title'][:40]} "
+                f"| {s['status']} "
+                f"| {pr_link} "
+                f"| {v_status} |"
             )
-            print(f"             {s['session_url']}")
-        print()
 
     if events:
-        print("--- Recent Events ---")
+        lines += [
+            "",
+            "<details><summary>Recent Events</summary>",
+            "",
+            "| Time | Event | Issue |",
+            "|------|-------|-------|",
+        ]
         for e in events[:15]:
             ts = datetime.fromtimestamp(
                 e["timestamp"], tz=timezone.utc
             ).strftime("%m-%d %H:%M")
-            issue_str = f" #{e['issue_number']}" if e.get("issue_number") else ""
-            print(f"  {ts}  {e['event_type']}{issue_str}")
-        print()
+            issue_str = f"#{e['issue_number']}" if e.get("issue_number") else "-"
+            lines.append(f"| {ts} | {e['event_type']} | {issue_str} |")
+        lines.append("")
+        lines.append("</details>")
 
-    print("=" * 64)
+    return "\n".join(lines)
+
+
+def cmd_report(args: argparse.Namespace) -> None:
+    """Print the observability report to stdout."""
+    init_db()
+    stats = get_session_stats()
+    sessions = get_all_sessions()
+    events = get_recent_events(limit=20)
+    print(build_markdown_report(stats, sessions, events))
+
+
+def cmd_report_github(args: argparse.Namespace) -> None:
+    """Post the observability report as a comment on the status issue in GitHub."""
+    init_db()
+
+    if not GITHUB_TOKEN:
+        print("[ERROR] GITHUB_TOKEN not set.")
+        sys.exit(1)
+
+    from src.github_client import post_status_report
+
+    stats = get_session_stats()
+    sessions = get_all_sessions()
+    events = get_recent_events(limit=20)
+    md = build_markdown_report(stats, sessions, events)
+
+    print("Posting report to GitHub...")
+    result = post_status_report(md)
+    print(f"  Posted: {result.get('html_url', '(done)')}")
 
 
 def main() -> None:
@@ -216,6 +283,11 @@ def main() -> None:
 
     report_p = subparsers.add_parser("report", help="Show observability report")
     report_p.set_defaults(func=cmd_report)
+
+    report_gh_p = subparsers.add_parser(
+        "report-github", help="Post report to GitHub status issue"
+    )
+    report_gh_p.set_defaults(func=cmd_report_github)
 
     args = parser.parse_args()
     args.func(args)
