@@ -111,7 +111,7 @@ def test_create_screenshot_session(mock_create) -> None:
     mock_create.assert_called_once()
     prompt = mock_create.call_args[0][0]
     assert "PR #10" in prompt
-    assert "Docker Compose" in prompt
+    assert "Playwright" in prompt
 
 
 def test_create_screenshot_session_no_prs() -> None:

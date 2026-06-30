@@ -148,6 +148,7 @@ def create_screenshot_session() -> dict | None:
         pr_entries.append({
             "issue_number": s["github_issue_number"],
             "title": s["issue_title"],
+            "body": s.get("issue_body", ""),
             "pr_url": pr_url,
             "pr_number": pr_number,
             "branch": f"devin/fix-issue-{s['github_issue_number']}",
