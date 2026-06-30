@@ -167,9 +167,25 @@ def test_report_empty(client) -> None:
     data = resp.get_json()
     assert "generated_at" in data
     assert data["stats"]["total_sessions"] == 0
+    assert "verification" in data["stats"]
+    assert "throughput" in data["stats"]
 
 
 def test_report_text_empty(client) -> None:
     resp = client.get("/report/text")
     assert resp.status_code == 200
-    assert "COSMETIC-BUG AUTOMATION REPORT" in resp.data.decode()
+    body = resp.data.decode()
+    assert "COSMETIC-BUG AUTOMATION REPORT" in body
+    assert "Pipeline Health" in body
+    assert "Verification Status" in body
+    assert "Throughput" in body
+
+
+def test_dashboard_empty(client) -> None:
+    resp = client.get("/dashboard")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "Cosmetic Bug Automation Dashboard" in body
+    assert "Issues Tracked" in body
+    assert "Success Rate" in body
+    assert "Verification Pipeline" in body

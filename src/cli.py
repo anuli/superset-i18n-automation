@@ -134,6 +134,19 @@ def cmd_verify(args: argparse.Namespace) -> None:
         print(f"  Session: {result['session_url']}")
 
 
+def _format_duration(seconds: float | None) -> str:
+    """Format seconds into a human-readable duration string."""
+    if seconds is None:
+        return "N/A"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{minutes:.1f}m"
+    hours = minutes / 60
+    return f"{hours:.1f}h"
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     """Print the observability report."""
     init_db()
@@ -148,28 +161,58 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print()
 
-    print("--- Summary ---")
+    # --- Pipeline Health ---
+    print("--- Pipeline Health ---")
+    total = stats["total_sessions"]
+    prs = stats["sessions_with_prs"]
+    rate = (prs / total * 100) if total > 0 else 0
     print(f"  Issues tracked:        {stats['total_issues_tracked']}")
-    print(f"  Devin sessions total:  {stats['total_sessions']}")
-    print(f"  Sessions with PRs:     {stats['sessions_with_prs']}")
-    for status, count in stats.get("by_status", {}).items():
-        print(f"    {status}: {count}")
-    if stats["total_sessions"] > 0:
-        rate = stats["sessions_with_prs"] / stats["total_sessions"] * 100
-        print(f"  PR success rate:       {rate:.0f}%")
+    print(f"  Sessions created:      {total}")
+    print(f"  PRs produced:          {prs}")
+    print(f"  Success rate:          {rate:.0f}%")
+    print(f"  Avg time to PR:        {_format_duration(stats.get('avg_time_to_pr_seconds'))}")
     print()
 
+    # --- Status Breakdown ---
+    print("--- Session Status ---")
+    for status, count in stats.get("by_status", {}).items():
+        bar = "#" * count
+        print(f"  {status:>12s}: {count:>3d}  {bar}")
+    print()
+
+    # --- Verification ---
+    v = stats.get("verification", {})
+    print("--- Verification Status ---")
+    print(f"  Verified (screenshots):  {v.get('verified', 0)}")
+    print(f"  In progress:             {v.get('in_progress', 0)}")
+    print(f"  Pending:                 {v.get('pending', 0)}")
+    print(f"  Errors:                  {v.get('errors', 0)}")
+    print()
+
+    # --- Throughput ---
+    tp = stats.get("throughput", {})
+    print("--- Throughput ---")
+    print(f"  Sessions (last 24h):     {tp.get('sessions_last_24h', 0)}")
+    print(f"  Sessions (last 7d):      {tp.get('sessions_last_7d', 0)}")
+    print(f"  PRs produced (last 24h): {tp.get('prs_last_24h', 0)}")
+    print(f"  PRs produced (last 7d):  {tp.get('prs_last_7d', 0)}")
+    print()
+
+    # --- Sessions ---
     if sessions:
         print("--- Sessions ---")
         for s in sessions[:20]:
             pr_str = f" -> {s['pr_url']}" if s.get("pr_url") else ""
+            v_status = s.get("screenshot_status") or "-"
             print(
-                f"  [{s['status']:>10s}] #{s['github_issue_number']} "
-                f"{s['issue_title'][:50]}{pr_str}"
+                f"  [{s['status']:>10s}] [v:{v_status:>5s}] "
+                f"#{s['github_issue_number']} "
+                f"{s['issue_title'][:40]}{pr_str}"
             )
             print(f"             {s['session_url']}")
         print()
 
+    # --- Recent Events ---
     if events:
         print("--- Recent Events ---")
         for e in events[:15]:

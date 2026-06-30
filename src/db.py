@@ -220,7 +220,7 @@ def get_active_sessions() -> list[dict]:
 
 
 def get_session_stats() -> dict:
-    """Get aggregate session statistics."""
+    """Get aggregate session statistics including timing and verification."""
     with get_db() as conn:
         total = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         by_status = conn.execute(
@@ -233,11 +233,68 @@ def get_session_stats() -> dict:
             "SELECT COUNT(*) FROM issues"
         ).fetchone()[0]
 
+        # Verification stats
+        verified = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE screenshot_status = 'done'"
+        ).fetchone()[0]
+        verify_in_progress = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE screenshot_status = 'in_progress'"
+        ).fetchone()[0]
+        verify_errors = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE screenshot_status = 'error'"
+        ).fetchone()[0]
+        verify_pending = conn.execute(
+            """SELECT COUNT(*) FROM sessions
+               WHERE pr_url IS NOT NULL AND screenshot_status IS NULL"""
+        ).fetchone()[0]
+
+        # Timing: average time from session creation to PR (finished sessions)
+        avg_time_row = conn.execute(
+            """SELECT AVG(s.updated_at - s.created_at) as avg_seconds
+               FROM sessions s
+               WHERE s.status = 'finished' AND s.pr_url IS NOT NULL"""
+        ).fetchone()
+        avg_time_to_pr = avg_time_row["avg_seconds"] if avg_time_row else None
+
+        # Throughput: sessions created in last 24h and last 7d
+        now = time.time()
+        last_24h = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE created_at > ?",
+            (now - 86400,),
+        ).fetchone()[0]
+        last_7d = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE created_at > ?",
+            (now - 604800,),
+        ).fetchone()[0]
+        prs_last_24h = conn.execute(
+            """SELECT COUNT(*) FROM sessions
+               WHERE pr_url IS NOT NULL AND updated_at > ?""",
+            (now - 86400,),
+        ).fetchone()[0]
+        prs_last_7d = conn.execute(
+            """SELECT COUNT(*) FROM sessions
+               WHERE pr_url IS NOT NULL AND updated_at > ?""",
+            (now - 604800,),
+        ).fetchone()[0]
+
     return {
         "total_sessions": total,
         "total_issues_tracked": total_issues,
         "by_status": {row["status"]: row["count"] for row in by_status},
         "sessions_with_prs": with_prs,
+        "verification": {
+            "verified": verified,
+            "in_progress": verify_in_progress,
+            "errors": verify_errors,
+            "pending": verify_pending,
+        },
+        "avg_time_to_pr_seconds": avg_time_to_pr,
+        "throughput": {
+            "sessions_last_24h": last_24h,
+            "sessions_last_7d": last_7d,
+            "prs_last_24h": prs_last_24h,
+            "prs_last_7d": prs_last_7d,
+        },
     }
 
 

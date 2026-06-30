@@ -104,13 +104,29 @@ A Devin automation can be configured to trigger on GitHub issue events directly,
 
 The system answers: *"If I were an engineering leader, how would I know this is working?"*
 
-### Metrics available via `/report` (JSON) and `/report/text` (plain text):
-- **Issues tracked** — total cosmetic issues processed
-- **Sessions created** — total Devin sessions launched
-- **Sessions with PRs** — how many sessions produced a pull request
-- **PR success rate** — percentage of sessions that resulted in a PR
-- **Session status breakdown** — created / running / finished / error
-- **Recent events** — audit log of issue receipts, session creations, status changes
+### Visual Dashboard (`/dashboard`)
+A styled HTML dashboard showing at a glance:
+- **Pipeline health** — issues tracked, sessions created, PRs produced, success rate, avg time to PR
+- **Session status** — bar chart breakdown of created / running / finished / error
+- **Verification pipeline** — verified / in-progress / pending / errors
+- **Throughput** — sessions and PRs in last 24h and 7d
+- **Session table** — every session with issue, status, PR link, verification status, Devin session link
+- **Event log** — recent audit events
+
+### API Endpoints
+| Endpoint | Format | Description |
+|---|---|---|
+| `GET /dashboard` | HTML | Visual dashboard for eng leadership |
+| `GET /report` | JSON | Machine-readable stats with all metrics |
+| `GET /report/text` | Plain text | Terminal-friendly dashboard |
+
+### Metrics tracked:
+- **Pipeline health** — issues tracked, sessions created, PRs produced, success rate
+- **Timing** — average time from session creation to PR
+- **Verification** — verified / in-progress / pending / error counts
+- **Throughput** — sessions and PRs in last 24h and 7d
+- **Status breakdown** — created / running / finished / error
+- **Audit log** — timestamped events for issue receipts, session creations, status changes
 
 ### Session sync
 `POST /sessions/sync` or `python -m src.cli sync` polls the Devin API to update session statuses and detect newly created PRs.

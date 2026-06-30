@@ -88,6 +88,16 @@ def test_session_stats() -> None:
     assert stats["by_status"]["error"] == 1
     assert stats["by_status"]["created"] == 1
 
+    # Enhanced stats
+    assert "verification" in stats
+    assert stats["verification"]["pending"] == 1  # s1 has PR but no screenshot_status
+    assert stats["verification"]["verified"] == 0
+    assert "throughput" in stats
+    assert stats["throughput"]["sessions_last_24h"] == 3
+    assert stats["throughput"]["sessions_last_7d"] == 3
+    assert stats["throughput"]["prs_last_24h"] == 1
+    assert stats["avg_time_to_pr_seconds"] is not None
+
 
 def test_log_and_get_events() -> None:
     init_db()
