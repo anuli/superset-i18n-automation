@@ -17,7 +17,11 @@ from src.db import (
     get_session_stats,
     init_db,
 )
-from src.orchestrator import handle_issue, sync_session_statuses
+from src.orchestrator import (
+    create_screenshot_session,
+    handle_issue,
+    sync_session_statuses,
+)
 
 app = Flask(__name__)
 
@@ -179,6 +183,17 @@ def sync_sessions() -> Response:
     """Trigger a status sync for all active sessions."""
     updated = sync_session_statuses()
     return jsonify({"updated": updated})
+
+
+@app.route("/sessions/verify", methods=["POST"])
+def verify_screenshots() -> tuple[Response, int]:
+    """Create a screenshot verification session for unverified PRs."""
+    result = create_screenshot_session()
+    if result is None:
+        return jsonify({"message": "No PRs need verification"}), 200
+    if "error" in result:
+        return jsonify({"error": result["error"]}), 500
+    return jsonify(result), 201
 
 
 def create_app() -> Flask:

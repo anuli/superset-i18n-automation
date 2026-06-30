@@ -6,8 +6,18 @@ from unittest.mock import patch
 
 import pytest
 
-from src.db import get_sessions_for_issue, init_db, save_issue, save_session
-from src.orchestrator import handle_issue, sync_session_statuses
+from src.db import (
+    get_sessions_for_issue,
+    init_db,
+    save_issue,
+    save_session,
+    update_session_status,
+)
+from src.orchestrator import (
+    create_screenshot_session,
+    handle_issue,
+    sync_session_statuses,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -80,3 +90,46 @@ def test_sync_session_statuses(mock_get) -> None:
     assert len(updated) == 1
     assert updated[0]["new_status"] == "finished"
     assert updated[0]["pr_url"] == "https://github.com/anuli/superset/pull/99"
+
+
+@patch("src.orchestrator.devin_client.create_session")
+def test_create_screenshot_session(mock_create) -> None:
+    init_db()
+    issue_id = save_issue(5, "url", "Overflow bug", "body", ["#bug:cosmetic"])
+    save_session(issue_id, "s1", "url1", "prompt")
+    update_session_status("s1", "finished", "https://github.com/anuli/superset/pull/10")
+
+    mock_create.return_value = {
+        "session_id": "verify-123",
+        "url": "https://app.devin.ai/sessions/verify-123",
+    }
+
+    result = create_screenshot_session()
+    assert result is not None
+    assert result["session_id"] == "verify-123"
+    assert result["pr_count"] == 1
+    mock_create.assert_called_once()
+    prompt = mock_create.call_args[0][0]
+    assert "PR #10" in prompt
+    assert "Docker Compose" in prompt
+
+
+def test_create_screenshot_session_no_prs() -> None:
+    init_db()
+    result = create_screenshot_session()
+    assert result is None
+
+
+@patch("src.orchestrator.devin_client.create_session")
+def test_create_screenshot_session_skips_already_verified(mock_create) -> None:
+    init_db()
+    issue_id = save_issue(7, "url", "Focus outline", "body", ["#bug:cosmetic"])
+    save_session(issue_id, "s2", "url2", "prompt")
+    update_session_status("s2", "finished", "https://github.com/anuli/superset/pull/8")
+
+    from src.db import update_screenshot_status
+    update_screenshot_status("s2", "done")
+
+    result = create_screenshot_session()
+    assert result is None
+    mock_create.assert_not_called()

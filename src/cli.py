@@ -113,6 +113,27 @@ def cmd_sync(args: argparse.Namespace) -> None:
         print("  No updates.")
 
 
+def cmd_verify(args: argparse.Namespace) -> None:
+    """Create a screenshot verification session for unverified PRs."""
+    init_db()
+
+    if not DEVIN_API_TOKEN:
+        print("[ERROR] DEVIN_API_TOKEN not set.")
+        sys.exit(1)
+
+    from src.orchestrator import create_screenshot_session
+
+    print("Checking for PRs needing screenshot verification...")
+    result = create_screenshot_session()
+    if result is None:
+        print("  No PRs need verification.")
+    elif "error" in result:
+        print(f"  Error: {result['error']}")
+    else:
+        print(f"  Verification session created for {result['pr_count']} PR(s)")
+        print(f"  Session: {result['session_url']}")
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     """Print the observability report."""
     init_db()
@@ -187,6 +208,11 @@ def main() -> None:
 
     sync_p = subparsers.add_parser("sync", help="Sync session statuses")
     sync_p.set_defaults(func=cmd_sync)
+
+    verify_p = subparsers.add_parser(
+        "verify", help="Create screenshot verification session for unverified PRs"
+    )
+    verify_p.set_defaults(func=cmd_verify)
 
     report_p = subparsers.add_parser("report", help="Show observability report")
     report_p.set_defaults(func=cmd_report)

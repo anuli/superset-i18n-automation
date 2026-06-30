@@ -9,12 +9,17 @@ from src.config import COSMETIC_LABEL, DEVIN_API_TOKEN, GITHUB_TOKEN
 from src.db import (
     get_active_sessions,
     get_sessions_for_issue,
+    get_sessions_needing_screenshots,
     log_event,
     save_issue,
     save_session,
+    update_screenshot_status,
     update_session_status,
 )
-from src.prompt_builder import build_cosmetic_fix_prompt
+from src.prompt_builder import (
+    build_cosmetic_fix_prompt,
+    build_screenshot_verification_prompt,
+)
 
 
 def handle_issue(issue_number: int, issue_url: str, title: str,
@@ -124,3 +129,57 @@ def backfill_open_issues() -> list[dict]:
         )
         results.append(res)
     return results
+
+
+def create_screenshot_session() -> dict | None:
+    """Create a single Devin session to screenshot-verify all PRs that
+    haven't been verified yet.
+
+    Returns session info dict, or None if there are no PRs to verify.
+    """
+    sessions = get_sessions_needing_screenshots()
+    if not sessions:
+        return None
+
+    pr_entries: list[dict] = []
+    for s in sessions:
+        pr_url = s["pr_url"]
+        pr_number = pr_url.rstrip("/").split("/")[-1] if pr_url else ""
+        pr_entries.append({
+            "issue_number": s["github_issue_number"],
+            "title": s["issue_title"],
+            "pr_url": pr_url,
+            "pr_number": pr_number,
+            "branch": f"devin/fix-issue-{s['github_issue_number']}",
+        })
+
+    prompt = build_screenshot_verification_prompt(pr_entries)
+    tags = ["screenshot-verification"]
+
+    try:
+        result = devin_client.create_session(prompt, tags=tags)
+    except requests.RequestException as exc:
+        log_event("screenshot_session_failed",
+                  details={"error": str(exc),
+                           "pr_count": len(pr_entries)})
+        for s in sessions:
+            update_screenshot_status(s["session_id"], "error")
+        return {"error": str(exc)}
+
+    session_id = result.get("session_id", "")
+    session_url = result.get("url",
+                             f"https://app.devin.ai/sessions/{session_id}")
+
+    for s in sessions:
+        update_screenshot_status(s["session_id"], "in_progress")
+
+    log_event("screenshot_session_created",
+              session_id=session_id,
+              details={"pr_count": len(pr_entries),
+                       "pr_numbers": [e["pr_number"] for e in pr_entries]})
+
+    return {
+        "session_id": session_id,
+        "session_url": session_url,
+        "pr_count": len(pr_entries),
+    }
