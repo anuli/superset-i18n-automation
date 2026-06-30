@@ -88,6 +88,14 @@ def test_session_stats() -> None:
     assert stats["by_status"]["error"] == 1
     assert stats["by_status"]["created"] == 1
 
+    assert "verification" in stats
+    assert stats["verification"]["pending"] == 1
+    assert stats["verification"]["verified"] == 0
+    assert "throughput" in stats
+    assert stats["throughput"]["prs_last_24h"] == 1
+    assert stats["throughput"]["prs_last_7d"] == 1
+    assert stats["avg_time_to_pr_seconds"] is not None
+
 
 def test_log_and_get_events() -> None:
     init_db()
@@ -110,3 +118,25 @@ def test_get_all_sessions_includes_issue_info() -> None:
     assert len(sessions) == 1
     assert sessions[0]["github_issue_number"] == 99
     assert sessions[0]["issue_title"] == "Dark mode button"
+
+
+def test_markdown_report_builder() -> None:
+    from src.cli import build_markdown_report
+
+    init_db()
+    issue_id = save_issue(1, "u1", "Fix overflow", None, ["#bug:cosmetic"])
+    save_session(issue_id, "s1", "url1", "p1")
+    update_session_status("s1", "finished", "https://github.com/pr/1")
+    log_event("session_created", issue_number=1, session_id="s1")
+
+    stats = get_session_stats()
+    sessions = get_all_sessions()
+    events = get_recent_events(limit=10)
+
+    md = build_markdown_report(stats, sessions, events)
+    assert "## Automation Report" in md
+    assert "| Issues tracked | 1 |" in md
+    assert "| Success rate | 100% |" in md
+    assert "| PRs produced | 1 |" in md
+    assert "Fix overflow" in md
+    assert "session_created" in md

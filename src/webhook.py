@@ -1,6 +1,5 @@
 """
-Flask server handling GitHub webhook events and serving the observability
-dashboard.
+Flask server handling GitHub webhook events and observability endpoints.
 """
 
 import hashlib
@@ -10,6 +9,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
+from src.cli import build_markdown_report
 from src.config import COSMETIC_LABEL, SUPERSET_REPO, WEBHOOK_SECRET
 from src.db import (
     get_all_sessions,
@@ -119,6 +119,7 @@ def report_json() -> Response:
                 "issue_title": s["issue_title"],
                 "status": s["status"],
                 "pr_url": s["pr_url"],
+                "screenshot_status": s.get("screenshot_status"),
                 "created_at": s["created_at"],
             }
             for s in sessions
@@ -129,53 +130,12 @@ def report_json() -> Response:
 
 @app.route("/report/text", methods=["GET"])
 def report_text() -> Response:
-    """Plain-text observability dashboard for engineering leadership."""
+    """Markdown observability report."""
     stats = get_session_stats()
     sessions = get_all_sessions()
     events = get_recent_events(limit=20)
-
-    lines = [
-        "=" * 64,
-        "  SUPERSET COSMETIC-BUG AUTOMATION REPORT",
-        "=" * 64,
-        f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-        "",
-        "--- Summary ---",
-        f"  Issues tracked:        {stats['total_issues_tracked']}",
-        f"  Devin sessions total:  {stats['total_sessions']}",
-        f"  Sessions with PRs:     {stats['sessions_with_prs']}",
-    ]
-    for status, count in stats.get("by_status", {}).items():
-        lines.append(f"    {status}: {count}")
-
-    if stats["total_sessions"] > 0:
-        success_rate = stats["sessions_with_prs"] / stats["total_sessions"] * 100
-        lines.append(f"  PR success rate:       {success_rate:.0f}%")
-    lines.append("")
-
-    if sessions:
-        lines.append("--- Sessions ---")
-        for s in sessions[:20]:
-            pr_str = f" -> {s['pr_url']}" if s.get("pr_url") else ""
-            lines.append(
-                f"  [{s['status']:>10s}] #{s['github_issue_number']} "
-                f"{s['issue_title'][:50]}{pr_str}"
-            )
-            lines.append(f"             {s['session_url']}")
-        lines.append("")
-
-    if events:
-        lines.append("--- Recent Events ---")
-        for e in events[:15]:
-            ts = datetime.fromtimestamp(
-                e["timestamp"], tz=timezone.utc
-            ).strftime("%m-%d %H:%M")
-            issue_str = f" #{e['issue_number']}" if e.get("issue_number") else ""
-            lines.append(f"  {ts}  {e['event_type']}{issue_str}")
-        lines.append("")
-
-    lines.append("=" * 64)
-    return Response("\n".join(lines), mimetype="text/plain")
+    md = build_markdown_report(stats, sessions, events)
+    return Response(md, mimetype="text/plain")
 
 
 @app.route("/sessions/sync", methods=["POST"])
