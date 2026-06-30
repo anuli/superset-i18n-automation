@@ -54,6 +54,7 @@ def init_db() -> None:
                 prompt TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'created',
                 pr_url TEXT,
+                screenshot_status TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 FOREIGN KEY (issue_id) REFERENCES issues(id)
@@ -238,6 +239,33 @@ def get_session_stats() -> dict:
         "by_status": {row["status"]: row["count"] for row in by_status},
         "sessions_with_prs": with_prs,
     }
+
+
+def get_sessions_needing_screenshots() -> list[dict]:
+    """Get sessions that have PRs but haven't been screenshot-verified yet."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT s.*, i.github_issue_number, i.title as issue_title,
+                      i.body as issue_body
+               FROM sessions s
+               JOIN issues i ON s.issue_id = i.id
+               WHERE s.pr_url IS NOT NULL
+                 AND s.screenshot_status IS NULL
+               ORDER BY s.created_at DESC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_screenshot_status(session_id: str, status: str) -> None:
+    """Mark a session's screenshot verification status."""
+    now = time.time()
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE sessions
+               SET screenshot_status = ?, updated_at = ?
+               WHERE session_id = ?""",
+            (status, now, session_id),
+        )
 
 
 def get_recent_events(limit: int = 50) -> list[dict]:
