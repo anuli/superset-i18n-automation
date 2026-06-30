@@ -231,3 +231,84 @@ def get_coverage_trend(locale: str, limit: int = 10) -> list[dict]:
             (locale, limit),
         ).fetchall()
     return [{"timestamp": r["timestamp"], "coverage_pct": r["metric_value"]} for r in rows]
+
+
+def _ensure_cosmetic_tables() -> None:
+    """Create tables for cosmetic bug tracking if they don't exist."""
+    with get_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS cosmetic_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_number INTEGER NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                session_id TEXT,
+                session_url TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pr_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pr_number INTEGER NOT NULL UNIQUE,
+                session_id TEXT,
+                session_url TEXT,
+                verified_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_cosmetic_issues_number
+                ON cosmetic_issues(issue_number);
+            CREATE INDEX IF NOT EXISTS idx_pr_verifications_number
+                ON pr_verifications(pr_number);
+        """)
+
+
+def save_cosmetic_issue(
+    issue_number: int,
+    title: str,
+    url: str,
+    status: str = "open",
+    session_id: str | None = None,
+    session_url: str | None = None,
+) -> int:
+    """Save a cosmetic issue record."""
+    _ensure_cosmetic_tables()
+    now = time.time()
+    with get_db() as conn:
+        cursor = conn.execute(
+            """INSERT OR REPLACE INTO cosmetic_issues
+               (issue_number, title, url, status, session_id, session_url, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (issue_number, title, url, status, session_id, session_url, now, now),
+        )
+        return cursor.lastrowid
+
+
+def get_tracked_issue_numbers() -> set[int]:
+    """Get set of issue numbers already tracked."""
+    _ensure_cosmetic_tables()
+    with get_db() as conn:
+        rows = conn.execute("SELECT issue_number FROM cosmetic_issues").fetchall()
+    return {r["issue_number"] for r in rows}
+
+
+def get_verified_pr_numbers() -> set[int]:
+    """Get set of PR numbers that have been verified."""
+    _ensure_cosmetic_tables()
+    with get_db() as conn:
+        rows = conn.execute("SELECT pr_number FROM pr_verifications").fetchall()
+    return {r["pr_number"] for r in rows}
+
+
+def mark_pr_verified(pr_number: int, session_id: str = "", session_url: str = "") -> None:
+    """Mark a PR as verified."""
+    _ensure_cosmetic_tables()
+    now = time.time()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO pr_verifications
+               (pr_number, session_id, session_url, verified_at)
+               VALUES (?, ?, ?, ?)""",
+            (pr_number, session_id, session_url, now),
+        )
