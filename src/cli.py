@@ -1,173 +1,102 @@
 """
-CLI interface for the i18n automation.
+CLI interface for the cosmetic-bug automation.
 
 Usage:
-    python -m src.cli scan [--fix] [--threshold N]
-    python -m src.cli report
-    python -m src.cli sync
     python -m src.cli serve [--port PORT]
+    python -m src.cli backfill
+    python -m src.cli sync
+    python -m src.cli report
+    python -m src.cli process-issue ISSUE_NUMBER
 """
 
 import argparse
 import sys
-import time
 from datetime import datetime, timezone
 
-from src.config import COVERAGE_THRESHOLD, SUPERSET_BRANCH, SUPERSET_REPO
+from src.config import COSMETIC_LABEL, DEVIN_API_TOKEN, GITHUB_TOKEN, SUPERSET_REPO
 from src.db import (
     get_all_sessions,
-    get_latest_scan,
-    get_scan_history,
+    get_recent_events,
     get_session_stats,
     init_db,
-    save_scan,
 )
-from src.scanner import run_scan
 
 
-def cmd_scan(args: argparse.Namespace) -> None:
-    """Run an i18n scan and optionally create fix sessions."""
+def cmd_serve(args: argparse.Namespace) -> None:
+    """Start the webhook server."""
+    from src.webhook import create_app
+
+    app = create_app()
+    print(f"Starting webhook server on port {args.port}...")
+    print(f"  Webhook:    http://localhost:{args.port}/webhook")
+    print(f"  Report:     http://localhost:{args.port}/report")
+    print(f"  Text report:http://localhost:{args.port}/report/text")
+    print(f"  Health:     http://localhost:{args.port}/health")
+    app.run(host="0.0.0.0", port=args.port, debug=args.debug)
+
+
+def cmd_backfill(args: argparse.Namespace) -> None:
+    """Fetch open cosmetic issues and create sessions for any missing."""
     init_db()
 
-    print(f"Scanning {SUPERSET_REPO} ({SUPERSET_BRANCH})...")
-    print("Cloning/updating repository...")
+    if not DEVIN_API_TOKEN:
+        print("[ERROR] DEVIN_API_TOKEN not set.")
+        sys.exit(1)
 
-    scan_result = run_scan(force_fresh=args.fresh)
+    from src.orchestrator import backfill_open_issues
 
-    print(f"\nCommit: {scan_result.commit_sha[:12]}")
-    print(f"Template strings (messages.pot): {scan_result.pot_total_strings}")
-    print()
+    print(f"Fetching open '{COSMETIC_LABEL}' issues from {SUPERSET_REPO}...")
+    results = backfill_open_issues()
+    created = [r for r in results if "session_id" in r]
+    skipped = [r for r in results if r.get("skipped")]
+    errors = [r for r in results if "error" in r]
 
-    print("Translation Coverage:")
-    print("-" * 70)
-    threshold = args.threshold or COVERAGE_THRESHOLD
-    below_threshold = []
-
-    for cov in scan_result.locale_coverages:
-        bar_len = int(cov.coverage_pct / 2)
-        bar = "#" * bar_len + "." * (50 - bar_len)
-        flag = " <-- BELOW THRESHOLD" if cov.coverage_pct < threshold else ""
-        print(f"  {cov.locale:>6s}  [{bar}] {cov.coverage_pct:5.1f}%  "
-              f"({cov.untranslated} missing){flag}")
-        if cov.coverage_pct < threshold:
-            below_threshold.append(cov)
-
-    print()
-    print(f"Unwrapped frontend strings found: {len(scan_result.unwrapped_strings)}")
-
-    if scan_result.unwrapped_strings:
-        file_groups: dict[str, int] = {}
-        for s in scan_result.unwrapped_strings:
-            file_groups[s.file_path] = file_groups.get(s.file_path, 0) + 1
-        print("  Top files:")
-        for f, count in sorted(file_groups.items(), key=lambda x: -x[1])[:10]:
-            print(f"    {f}: {count} strings")
-
-    scan_id = save_scan(scan_result, trigger_type="cli")
-    print(f"\nScan saved (id={scan_id})")
-
-    if args.fix:
-        from src.orchestrator import create_locale_fix_sessions, create_unwrapped_fix_session
-
-        if not args.dry_run:
-            from src.config import DEVIN_API_TOKEN
-            if not DEVIN_API_TOKEN:
-                print("\n[ERROR] DEVIN_API_TOKEN not set. Cannot create fix sessions.")
-                print("Set it with: export DEVIN_API_TOKEN='your-token-here'")
-                sys.exit(1)
-
-        if below_threshold:
-            print(f"\nCreating Devin sessions for {len(below_threshold)} locales below {threshold}%...")
-            if args.dry_run:
-                for cov in below_threshold[:3]:
-                    print(f"  [DRY RUN] Would create session for {cov.locale} ({cov.coverage_pct}%)")
-            else:
-                sessions = create_locale_fix_sessions(
-                    scan_id, scan_result, threshold=threshold
-                )
-                for s in sessions:
-                    print(f"  Created session for {s['locale']}: {s['session_url']}")
-
-        if scan_result.unwrapped_strings:
-            print("\nCreating Devin session for unwrapped strings...")
-            if args.dry_run:
-                print(f"  [DRY RUN] Would create session for {len(scan_result.unwrapped_strings)} unwrapped strings")
-            else:
-                result = create_unwrapped_fix_session(scan_id, scan_result)
-                if result:
-                    print(f"  Created session: {result['session_url']}")
-    else:
-        if below_threshold:
-            print(f"\n{len(below_threshold)} locale(s) below {threshold}% threshold.")
-            print("Run with --fix to create Devin sessions to address these.")
+    print(f"  {len(created)} sessions created")
+    for c in created:
+        print(f"    #{c['issue_number']}: {c['session_url']}")
+    if skipped:
+        print(f"  {len(skipped)} skipped")
+    if errors:
+        print(f"  {len(errors)} errors")
+        for e in errors:
+            print(f"    {e['error']}")
 
 
-def cmd_report(args: argparse.Namespace) -> None:
-    """Print the observability report."""
+def cmd_process_issue(args: argparse.Namespace) -> None:
+    """Process a single issue by number."""
     init_db()
 
-    latest_scan = get_latest_scan()
-    session_stats = get_session_stats()
-    all_sessions = get_all_sessions()
-    scan_history = get_scan_history(limit=10)
+    if not DEVIN_API_TOKEN:
+        print("[ERROR] DEVIN_API_TOKEN not set.")
+        sys.exit(1)
 
-    print("=" * 60)
-    print("  SUPERSET i18n AUTOMATION REPORT")
-    print("=" * 60)
-    print(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    print()
+    from src import github_client
+    from src.orchestrator import handle_issue
 
-    if not latest_scan:
-        print("  No scans recorded yet. Run: python -m src.cli scan")
-        return
+    print(f"Fetching issue #{args.issue_number} from {SUPERSET_REPO}...")
+    issue = github_client.get_issue(args.issue_number)
+    labels = [l["name"] for l in issue.get("labels", [])]
 
-    print("--- Latest Scan ---")
-    print(f"  Commit:  {latest_scan['commit_sha'][:12]}")
-    print(f"  Trigger: {latest_scan['trigger_type']}")
-    print(f"  Total catalog strings: {latest_scan['pot_total_strings']}")
-    print(f"  Unwrapped frontend strings: {latest_scan['unwrapped_count']}")
-    print()
+    result = handle_issue(
+        issue_number=issue["number"],
+        issue_url=issue["html_url"],
+        title=issue["title"],
+        body=issue.get("body"),
+        labels=labels,
+    )
 
-    print("--- Translation Coverage ---")
-    for cov in latest_scan.get("locale_coverages", []):
-        bar_len = int(cov["coverage_pct"] / 2)
-        bar = "#" * bar_len + "." * (50 - bar_len)
-        print(f"  {cov['locale']:>6s}  [{bar}] {cov['coverage_pct']:5.1f}%  "
-              f"({cov['untranslated']} missing)")
-    print()
-
-    print("--- Session Stats ---")
-    print(f"  Total sessions:    {session_stats['total_sessions']}")
-    print(f"  Sessions with PRs: {session_stats['sessions_with_prs']}")
-    for status, count in session_stats.get("by_status", {}).items():
-        print(f"    {status}: {count}")
-    print()
-
-    if all_sessions:
-        print("--- Recent Sessions ---")
-        for s in all_sessions[:10]:
-            locale_str = f"locale={s['locale']}" if s["locale"] else "frontend"
-            pr_str = f" -> {s['pr_url']}" if s.get("pr_url") else ""
-            print(f"  [{s['status']:>10s}] {s['task_type']} ({locale_str}){pr_str}")
-            print(f"             {s['session_url']}")
-        print()
-
-    if len(scan_history) > 1:
-        print("--- Scan History ---")
-        for s in scan_history:
-            ts = datetime.fromtimestamp(s["timestamp"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-            print(f"  {ts}  commit={s['commit_sha'][:8]}  "
-                  f"trigger={s['trigger_type']}  unwrapped={s['unwrapped_count']}")
-
-    print()
-    print("=" * 60)
+    if "session_id" in result:
+        print(f"Session created: {result['session_url']}")
+    elif result.get("skipped"):
+        print(f"Skipped: {result['reason']}")
+    elif "error" in result:
+        print(f"Error: {result['error']}")
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    """Sync session statuses from Devin API."""
+    """Sync session statuses from the Devin API."""
     init_db()
 
-    from src.config import DEVIN_API_TOKEN
     if not DEVIN_API_TOKEN:
         print("[ERROR] DEVIN_API_TOKEN not set.")
         sys.exit(1)
@@ -178,53 +107,89 @@ def cmd_sync(args: argparse.Namespace) -> None:
     updated = sync_session_statuses()
     if updated:
         for u in updated:
-            print(f"  {u['session_id']}: {u['old_status']} -> {u['new_status']}"
-                  + (f" PR: {u['pr_url']}" if u.get("pr_url") else ""))
+            pr_str = f" PR: {u['pr_url']}" if u.get("pr_url") else ""
+            print(f"  {u['session_id']}: {u['old_status']} -> {u['new_status']}{pr_str}")
     else:
-        print("  No sessions to update.")
+        print("  No updates.")
 
 
-def cmd_serve(args: argparse.Namespace) -> None:
-    """Start the webhook server."""
-    from src.webhook import create_app
+def cmd_report(args: argparse.Namespace) -> None:
+    """Print the observability report."""
+    init_db()
 
-    app = create_app()
-    print(f"Starting webhook server on port {args.port}...")
-    print(f"  Webhook endpoint: http://localhost:{args.port}/webhook")
-    print(f"  Report endpoint:  http://localhost:{args.port}/report")
-    print(f"  Text report:      http://localhost:{args.port}/report/text")
-    print(f"  Health check:     http://localhost:{args.port}/health")
-    app.run(host="0.0.0.0", port=args.port, debug=args.debug)
+    stats = get_session_stats()
+    sessions = get_all_sessions()
+    events = get_recent_events(limit=20)
+
+    print("=" * 64)
+    print("  SUPERSET COSMETIC-BUG AUTOMATION REPORT")
+    print("=" * 64)
+    print(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print()
+
+    print("--- Summary ---")
+    print(f"  Issues tracked:        {stats['total_issues_tracked']}")
+    print(f"  Devin sessions total:  {stats['total_sessions']}")
+    print(f"  Sessions with PRs:     {stats['sessions_with_prs']}")
+    for status, count in stats.get("by_status", {}).items():
+        print(f"    {status}: {count}")
+    if stats["total_sessions"] > 0:
+        rate = stats["sessions_with_prs"] / stats["total_sessions"] * 100
+        print(f"  PR success rate:       {rate:.0f}%")
+    print()
+
+    if sessions:
+        print("--- Sessions ---")
+        for s in sessions[:20]:
+            pr_str = f" -> {s['pr_url']}" if s.get("pr_url") else ""
+            print(
+                f"  [{s['status']:>10s}] #{s['github_issue_number']} "
+                f"{s['issue_title'][:50]}{pr_str}"
+            )
+            print(f"             {s['session_url']}")
+        print()
+
+    if events:
+        print("--- Recent Events ---")
+        for e in events[:15]:
+            ts = datetime.fromtimestamp(
+                e["timestamp"], tz=timezone.utc
+            ).strftime("%m-%d %H:%M")
+            issue_str = f" #{e['issue_number']}" if e.get("issue_number") else ""
+            print(f"  {ts}  {e['event_type']}{issue_str}")
+        print()
+
+    print("=" * 64)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Superset i18n Coverage Automation",
+        description="Superset Cosmetic-Bug Automation",
         prog="python -m src.cli",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    scan_parser = subparsers.add_parser("scan", help="Run an i18n coverage scan")
-    scan_parser.add_argument("--fix", action="store_true",
-                             help="Create Devin sessions to fix gaps")
-    scan_parser.add_argument("--dry-run", action="store_true",
-                             help="Show what would be done without creating sessions")
-    scan_parser.add_argument("--threshold", type=float,
-                             help=f"Coverage threshold (default: {COVERAGE_THRESHOLD})")
-    scan_parser.add_argument("--fresh", action="store_true",
-                             help="Force a fresh clone of the repo")
-    scan_parser.set_defaults(func=cmd_scan)
+    serve_p = subparsers.add_parser("serve", help="Start the webhook server")
+    serve_p.add_argument("--port", type=int, default=8000)
+    serve_p.add_argument("--debug", action="store_true")
+    serve_p.set_defaults(func=cmd_serve)
 
-    report_parser = subparsers.add_parser("report", help="Show observability report")
-    report_parser.set_defaults(func=cmd_report)
+    backfill_p = subparsers.add_parser(
+        "backfill", help="Process all open cosmetic issues"
+    )
+    backfill_p.set_defaults(func=cmd_backfill)
 
-    sync_parser = subparsers.add_parser("sync", help="Sync session statuses from Devin API")
-    sync_parser.set_defaults(func=cmd_sync)
+    process_p = subparsers.add_parser(
+        "process-issue", help="Process a single issue by number"
+    )
+    process_p.add_argument("issue_number", type=int)
+    process_p.set_defaults(func=cmd_process_issue)
 
-    serve_parser = subparsers.add_parser("serve", help="Start the webhook server")
-    serve_parser.add_argument("--port", type=int, default=8000)
-    serve_parser.add_argument("--debug", action="store_true")
-    serve_parser.set_defaults(func=cmd_serve)
+    sync_p = subparsers.add_parser("sync", help="Sync session statuses")
+    sync_p.set_defaults(func=cmd_sync)
+
+    report_p = subparsers.add_parser("report", help="Show observability report")
+    report_p.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
     args.func(args)
