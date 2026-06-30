@@ -4,22 +4,22 @@ Build targeted prompts for Devin sessions that fix cosmetic / UI bugs.
 
 from src.config import SUPERSET_REPO
 
-SCREENSHOT_PENDING_MARKER = (
+VERIFICATION_PENDING_MARKER = (
     "\n\n---\n"
-    "**Visual verification:** Screenshots pending — "
-    "a follow-up verification session will attach before/after "
-    "screenshots to this PR shortly.\n"
+    "**Visual verification:** Pending — "
+    "a follow-up Playwright verification session will attach "
+    "before/after component screenshots to this PR shortly.\n"
 )
 
-SCREENSHOT_ERROR_MARKER = (
+VERIFICATION_ERROR_MARKER = (
     "\n\n---\n"
-    "**Visual verification:** Screenshot verification failed. "
+    "**Visual verification:** Verification failed. "
     "Please verify the fix manually.\n"
 )
 
-SCREENSHOT_DONE_MARKER = (
+VERIFICATION_DONE_MARKER = (
     "\n\n---\n"
-    "**Visual verification:** Before/after screenshots attached below.\n"
+    "**Visual verification:** Before/after component screenshots attached below.\n"
 )
 
 
@@ -55,17 +55,20 @@ Instructions:
    Reference #{issue_number} in the PR body.
 8. At the end of the PR description, add exactly this line:
    ---
-   **Visual verification:** Screenshots pending — a follow-up verification session will attach before/after screenshots to this PR shortly.
+   **Visual verification:** Pending — a follow-up Playwright verification session will attach before/after component screenshots to this PR shortly.
 """
 
 
 def build_screenshot_verification_prompt(
     pr_entries: list[dict],
 ) -> str:
-    """Return a prompt for the single screenshot-verification session.
+    """Return a prompt for the single Playwright screenshot-verification session.
+
+    Uses Playwright to render the affected component in isolation and capture
+    before/after screenshots — no Docker or full Superset startup required.
 
     Each entry in *pr_entries* must have keys:
-        issue_number, title, pr_url, pr_number, branch
+        issue_number, title, body, pr_url, pr_number, branch
     """
     if not pr_entries:
         return ""
@@ -76,40 +79,66 @@ def build_screenshot_verification_prompt(
         for e in pr_entries
     )
 
-    return f"""Verify cosmetic fixes in {SUPERSET_REPO} by taking before/after screenshots.
+    pr_details = "\n\n".join(
+        f"PR #{e['pr_number']} (issue #{e['issue_number']}): {e['title']}\n"
+        f"Issue description: {e.get('body', '(no details)')}"
+        for e in pr_entries
+    )
+
+    return f"""Verify cosmetic fixes in {SUPERSET_REPO} using Playwright component screenshots.
 
 PRs to verify:
 {pr_list}
 
+Issue details:
+{pr_details}
+
 Instructions:
 1. Clone {SUPERSET_REPO} and check out the master branch.
-2. Start Superset locally using Docker Compose:
-   docker compose up -d
-   Wait until the app is accessible at http://localhost:8088.
-   Log in with admin/admin.
+2. cd superset-frontend && npm install
+3. Install Playwright: npx playwright install chromium
 
-3. For EACH PR listed above, do the following:
-   a. On the master branch (before the fix), navigate to the page described in
-      the issue and take a screenshot showing the bug. Save it as
-      before_<pr_number>.png.
-   b. Check out the PR branch, rebuild if needed, and take a screenshot of the
-      same page showing the fix applied. Save it as after_<pr_number>.png.
+4. For EACH PR listed above:
+   a. Read the PR diff to identify the exact React component that was changed.
+   b. Find an existing test, story, or usage of that component to understand
+      its props and imports.
+   c. Write a small Playwright script (verify_<pr_number>.ts) that:
+      - Imports and renders the component in a minimal HTML page using
+        Playwright's page.setContent() or by serving a small test harness.
+      - Uses Superset's ThemeProvider so the component renders with correct
+        styles. Import the theme from @superset-ui/core or
+        src/theme.ts.
+      - Renders the component with realistic props that reproduce the bug
+        scenario described in the issue (e.g., long text that would overflow,
+        narrow container, dark mode theme, etc.).
+      - Takes a screenshot and saves it as before_<pr_number>.png.
+   d. Check out the PR branch, run npm install if needed.
+   e. Run the same Playwright script again, saving the screenshot as
+      after_<pr_number>.png.
 
-4. For each PR, post a comment with the before/after screenshots:
-   ### Visual Verification
+5. For each PR, post a comment on the PR with the before/after screenshots:
+   ### Visual Verification (Playwright Component Test)
    **Before (master):**
    ![before](before_<pr_number>.png)
    **After (fix applied):**
    ![after](after_<pr_number>.png)
 
-5. Also update each PR description: find the line that says
-   "**Visual verification:** Screenshots pending" and replace it with:
-   "**Visual verification:** Before/after screenshots attached below."
+   Include a brief note explaining what the screenshots show and how the
+   fix addresses the visual defect.
 
-6. If you cannot start Superset or navigate to the affected page for a
-   particular PR, update that PR description to say:
-   "**Visual verification:** Screenshot verification failed. Please verify the fix manually."
-   and post a comment explaining what went wrong.
+6. Update each PR description: find the line that says
+   "**Visual verification:** Pending" and replace it with:
+   "**Visual verification:** Before/after component screenshots attached below."
 
-7. After processing all PRs, stop.
+7. If Playwright cannot render a particular component (missing dependencies,
+   complex providers, etc.), fall back to:
+   - Running the component's existing unit/snapshot tests on both branches
+     and comparing the output.
+   - Posting a code-review comment explaining the CSS change and why it
+     fixes the visual defect.
+   - Update the PR description to say:
+     "**Visual verification:** Component could not be rendered in isolation.
+     Code review and test comparison attached instead."
+
+8. After processing all PRs, stop.
 """

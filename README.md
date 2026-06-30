@@ -33,8 +33,8 @@ GitHub Issue Event
 
 1. A GitHub webhook fires when an issue is **opened** or **labeled** with `#bug:cosmetic` in `anuli/superset`.
 2. The webhook handler validates the event, deduplicates (one session per issue), and builds a targeted prompt describing the cosmetic fix.
-3. **Phase 1 — Fix:** A Devin session is created via the [Devin API](https://docs.devin.ai/api-reference/overview). Devin clones the repo, identifies the affected component, makes the CSS/styled-component fix, and opens a PR. The PR description includes a "Screenshots pending" note.
-4. **Phase 2 — Verify:** A single screenshot-verification session spins up Superset via Docker, checks out each PR branch, and captures before/after screenshots. It posts them as PR comments and updates the PR description status (pending → done, or → error if it fails).
+3. **Phase 1 — Fix:** A Devin session is created via the [Devin API](https://docs.devin.ai/api-reference/overview). Devin clones the repo, identifies the affected component, makes the CSS/styled-component fix, and opens a PR. The PR description includes a "Verification pending" note.
+4. **Phase 2 — Verify:** A single Playwright verification session renders the affected component in isolation (no Docker needed), captures before/after screenshots on master vs. the PR branch, and posts them as PR comments. Falls back to code review + test comparison if the component can't be rendered in isolation.
 5. Everything is tracked in a local SQLite database with an audit log.
 6. Observability endpoints (`/report`, `/report/text`) and a CLI (`report`, `sync`, `verify`) let engineering leadership monitor throughput, success rates, and PR output.
 
@@ -115,8 +115,8 @@ The system answers: *"If I were an engineering leader, how would I know this is 
 ### Session sync
 `POST /sessions/sync` or `python -m src.cli sync` polls the Devin API to update session statuses and detect newly created PRs.
 
-### Screenshot verification
-`POST /sessions/verify` or `python -m src.cli verify` creates a single Devin session to capture before/after screenshots for all PRs that haven't been verified yet. PR descriptions are updated from "Screenshots pending" to "Screenshots attached" (or an error message if verification fails).
+### Playwright verification
+`POST /sessions/verify` or `python -m src.cli verify` creates a single Devin session that uses Playwright to render affected components in isolation and capture before/after screenshots — no Docker or full Superset startup required (~2-3 min vs 20+). Falls back to code review + test comparison if a component can't be rendered standalone. PR descriptions are updated from "Pending" to "Screenshots attached" (or a fallback note).
 
 ## Tests
 
